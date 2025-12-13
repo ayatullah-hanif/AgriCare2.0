@@ -5,8 +5,6 @@ AgriCare is a production-ready AI backend for detecting diseases in crop plants 
 This system was designed with real-world agricultural deployment in mind,
 particularly for smallholder farmers in Nigeria.
 
----
-
 ## 🚀 Features
 
 - **ONNX EfficientNet-B3** for fast, reliable disease detection
