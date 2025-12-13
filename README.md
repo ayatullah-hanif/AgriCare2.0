@@ -1,3 +1,13 @@
+---
+title: AgriCare
+emoji:  leaf_fluttering
+colorFrom: '#ACE1AF'
+colorTo: '#4B834F'
+sdk: docker
+app_file: app.py
+pinned: false
+---
+
 # AgriCare – Disease Detection API 🌱
 
 AgriCare is a production-ready AI backend for detecting diseases in crop plants and delivering multilingual, farmer-friendly guidance.
