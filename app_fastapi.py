@@ -20,10 +20,11 @@ import logging
 import numpy as np
 import onnxruntime as ort
 import requests
+import uvicorn 
 from PIL import Image
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
+from fastapi.responses import HTMLResponse
 
 # -------------------------------------------------------
 # App Setup
@@ -45,6 +46,7 @@ logger = logging.getLogger("agricare_api")
 # Model Setup
 # -------------------------------------------------------
 MODEL_PATH = "cassava_efficientnetb3_fp16.onnx"
+# Ensure the model is loaded correctly with the appropriate provider configuration
 sess = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
 
 INPUT_NAME = sess.get_inputs()[0].name
@@ -165,13 +167,32 @@ def extract_sections(text):
             "for appropriate treatment and prevention guidance."
         )
 
-
     return sections
 
 # -------------------------------------------------------
-# API Endpoint
+# API Endpoints
 # -------------------------------------------------------
-from fastapi import Form
+
+@app.get("/", response_class=HTMLResponse)
+def read_root():
+    """
+    Handles the root URL request expected by Hugging Face Spaces.
+    Provides a simple HTML landing page.
+    """
+    return """
+    <html>
+        <head>
+            <title>AgriCare FastAPI Service</title>
+        </head>
+        <body>
+            <h1>Welcome to the AgriCare API Space!</h1>
+            <p>The main FastAPI service is running correctly.</p>
+            <p>Access the API documentation at the <a href="/docs">/docs</a> endpoint.</p>
+            <p>The prediction endpoint is <b>/predict</b> (POST request).</p>
+        </body>
+    </html>
+    """
+
 
 @app.post("/predict")
 async def predict(
@@ -226,7 +247,8 @@ async def predict(
     }
 
 # -------------------------------------------------------
-# Run
+# Run (Commented out for Docker deployment)
 # -------------------------------------------------------
-#if __name__ == "__main__":
-    uvicorn.run("app_fastapi:app", host="0.0.0.0", port=8000, reload=True)
+# if __name__ == "__main__":
+#     # Note: Hugging Face uses port 7860. Local runs can use 8000 if desired.
+#     uvicorn.run("app_fastapi:app", host="0.0.0.0", port=8000, reload=True)
