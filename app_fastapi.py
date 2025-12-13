@@ -21,6 +21,9 @@ import numpy as np
 import onnxruntime as ort
 import requests
 import uvicorn 
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+from datetime import datetime
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -67,90 +70,71 @@ LOW_CONF_THRESHOLD = 0.60
 # -------------------------------------------------------
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-NATLAS_TEXT_URL = "router.huggingface.co"
 
-HEADERS = {
-    "Authorization": f"Bearer {HF_TOKEN}",
-    "Content-Type": "application/json"
-}
+NATLAS_MODEL_NAME = "NCAIR1/N-ATLaS"
+model, tokenizer = None, None # Initialize globally
 
-# -------------------------------------------------------
-# Utilities
-# -------------------------------------------------------
-def softmax(x):
-    e = np.exp(x - np.max(x))
-    return e / e.sum()
+logger.info(f"Loading N-ATLaS model: {NATLAS_MODEL_NAME}...")
 
-def preprocess(image_bytes):
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img = img.resize((IMG_SIZE, IMG_SIZE))
+try:
+    tokenizer = AutoTokenizer.from_pretrained(NATLAS_MODEL_NAME, token=HF_TOKEN)
+    model = AutoModelForCausalLM.from_pretrained(
+        NATLAS_MODEL_NAME,
+        torch_dtype=torch.float16,
+        device_map="cpu", 
+        token=HF_TOKEN
+    )
+    logger.info("N-ATLaS model loaded successfully.")
+except Exception as e:
+    logger.error(f"Failed to load N-ATLaS model locally: {e}")
 
-    arr = np.array(img).astype("float32") / 255.0
-    arr = (arr - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
-    arr = np.transpose(arr, (2, 0, 1))
-    return arr[np.newaxis, :].astype(MODEL_DTYPE)
 
-# -------------------------------------------------------
-# N-ATLaS Text Generation
-# -------------------------------------------------------
+def format_text_for_inference(messages):
+    if not tokenizer: return ""
+    current_date = datetime.now().strftime('%d %b %Y')
+    text = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=False,
+        date_string=current_date
+    )
+    return text
+
 def generate_text_explanation(predicted_class: str) -> str:
-    # --- DEBUGGING LOG ---
-    if not HF_TOKEN:
-        logger.error("DEBUG: HF_TOKEN is missing or empty in environment. (Using fallback)")
-        return ""
-    else:
-        logger.info("DEBUG: HF_TOKEN successfully loaded from environment.")
-    # --- END DEBUGGING LOG ---
-
-    prompt = f"""
-    Provide agricultural advice for cassava condition:
-    {predicted_class}
-
-    Structure the response as:
-    English:
-    Hausa:
-    Igbo:
-    Yoruba:
-
-    Keep each section short and farmer-friendly.
-    """
-
-    try:
-        r = requests.post(
-            NATLAS_TEXT_URL,
-            headers=HEADERS,
-            json={"inputs": prompt},
-            timeout=20
-        )
-
-        # --- DEBUGGING LOG ---
-        logger.info(f"DEBUG: N-ATLaS API responded with status code: {r.status_code}")
-        logger.info(f"DEBUG: N-ATLaS API response body: {r.text}")
-        # --- END DEBUGGING LOG ---
-
-        if r.status_code != 200:
-            logger.error(f"N-ATLaS HTTP {r.status_code}: {r.text}")
-            return ""
-
-        data = r.json()
-        
-        if isinstance(data, list) and data and "generated_text" in data[0]:
-             return data[0]["generated_text"]
-        
-        logger.error(f"Unexpected N-ATLaS response format: {data}")
+    if model is None or tokenizer is None:
+        logger.warning("N-ATLaS model not loaded - using fallback.")
         return ""
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"N-ATLaS network failure: {e}")
-        return ""
+    q_chat = [
+        {'role':'system','content':'You are an agricultural extension officer providing advice in English, Hausa, Igbo, and Yoruba.'},
+        {'role': 'user', 'content': f"Provide short, farmer-friendly advice for the condition: {predicted_class}. Format it exactly as: English: ... Hausa: ... Igbo: ... Yoruba: ..."}
+    ]
 
-    except Exception as e:
-        logger.error(f"N-ATLaS unknown error: {e}")
-        return ""
+    text = format_text_for_inference(q_chat)
+    input_tokens = tokenizer(text, return_tensors='pt', add_special_tokens=False)
+    
+    device = torch.device("cpu") 
+    input_tokens = {k: v.to(device) for k, v in input_tokens.items()}
 
+    outputs = model.generate(
+        **input_tokens,
+        max_new_tokens = 512, 
+        use_cache=True,
+        repetition_penalty=1.12,
+        temperature = 0.1
+    )
 
+    decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+    
+    # Simple extraction of the generated text part
+    generated_text = decoded_outputs.replace(text, "").strip()
+
+    return generated_text
+
+# The extract_sections function remains the same as before
 def extract_sections(text):
     sections = {"english": "", "hausa": "", "igbo": "", "yoruba": ""}
+    # ... (keep the rest of the extract_sections function as you had it) ...
     current = None
 
     for line in text.splitlines():
@@ -166,7 +150,7 @@ def extract_sections(text):
         if current:
             sections[current] += line.strip() + " "
 
-    # fallback 
+    # fallback
     if not any(sections.values()):
         sections["english"] = (
             "This disease was detected with high confidence. "
