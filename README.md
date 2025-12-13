@@ -4,7 +4,7 @@ emoji: 🍃
 colorFrom: 'green'
 colorTo: 'blue'
 sdk: docker
-app_file: app.py
+app_file: app_fastapi.py
 pinned: false
 ---
 
