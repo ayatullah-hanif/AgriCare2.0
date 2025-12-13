@@ -67,8 +67,7 @@ LOW_CONF_THRESHOLD = 0.60
 # -------------------------------------------------------
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-HF_BASE = "https://router.huggingface.co"
-NATLAS_TEXT_URL = f"{HF_BASE}/NCAIR1/N-ATLaS"
+NATLAS_TEXT_URL = "router.huggingface.co"
 
 HEADERS = {
     "Authorization": f"Bearer {HF_TOKEN}",
