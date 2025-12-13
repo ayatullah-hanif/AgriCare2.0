@@ -1,8 +1,8 @@
 ---
 title: AgriCare
-emoji:  leaf_fluttering
-colorFrom: '#ACE1AF'
-colorTo: '#4B834F'
+emoji: 🍃 
+colorFrom: 'green'
+colorTo: 'blue'
 sdk: docker
 app_file: app.py
 pinned: false
