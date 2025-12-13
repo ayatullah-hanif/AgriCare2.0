@@ -1,8 +1,8 @@
 """
 AgriCare – Disease Detection API
---------------------------------------
+--------------------------------
 
-Production-grade AI backend for disease detection.
+Production-grade AI backend for cassava disease detection.
 
 Features:
 ✓ ONNX EfficientNet-B3 inference
@@ -17,21 +17,23 @@ Designed for real-world Nigerian agriculture.
 import os
 import io
 import logging
+from datetime import datetime
+
 import numpy as np
 import onnxruntime as ort
-import requests
-import uvicorn 
-from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
-from datetime import datetime
+import uvicorn
 from PIL import Image
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
-# -------------------------------------------------------
+
+# =====================================================
 # App Setup
-# -------------------------------------------------------
+# =====================================================
 app = FastAPI(title="AgriCare Disease Detection API")
 
 app.add_middleware(
@@ -45,14 +47,21 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agricare_api")
 
-# -------------------------------------------------------
-# Model Setup (ONNX Model)
-# -------------------------------------------------------
+
+# =====================================================
+# ONNX Model Setup
+# =====================================================
 MODEL_PATH = "cassava_efficientnetb3_fp16.onnx"
-sess = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+
+sess = ort.InferenceSession(
+    MODEL_PATH,
+    providers=["CPUExecutionProvider"]
+)
 
 INPUT_NAME = sess.get_inputs()[0].name
-MODEL_DTYPE = np.float16 if "float16" in sess.get_inputs()[0].type else np.float32
+MODEL_DTYPE = (
+    np.float16 if "float16" in sess.get_inputs()[0].type else np.float32
+)
 
 CLASS_NAMES = [
     "Cassava Bacterial Blight",
@@ -65,121 +74,150 @@ CLASS_NAMES = [
 IMG_SIZE = 300
 LOW_CONF_THRESHOLD = 0.60
 
-# -------------------------------------------------------
-# Hugging Face – N-ATLaS 
-# -------------------------------------------------------
+
+# =====================================================
+# Hugging Face – N-ATLaS (Local Model)
+# =====================================================
 HF_TOKEN = os.getenv("HF_TOKEN")
-
-
 NATLAS_MODEL_NAME = "NCAIR1/N-ATLaS"
-model, tokenizer = None, None # Initialize globally
 
-logger.info(f"Loading N-ATLaS model: {NATLAS_MODEL_NAME}...")
+tokenizer = None
+llm_model = None
+
+logger.info(f"Loading N-ATLaS model: {NATLAS_MODEL_NAME}")
 
 try:
-    tokenizer = AutoTokenizer.from_pretrained(NATLAS_MODEL_NAME, token=HF_TOKEN)
-    model = AutoModelForCausalLM.from_pretrained(
+    tokenizer = AutoTokenizer.from_pretrained(
+        NATLAS_MODEL_NAME,
+        token=HF_TOKEN
+    )
+    llm_model = AutoModelForCausalLM.from_pretrained(
         NATLAS_MODEL_NAME,
         torch_dtype=torch.float16,
-        device_map="cpu", 
+        device_map="cpu",
         token=HF_TOKEN
     )
     logger.info("N-ATLaS model loaded successfully.")
 except Exception as e:
-    logger.error(f"Failed to load N-ATLaS model locally: {e}")
+    logger.error(f"N-ATLaS load failed: {e}")
 
 
-def format_text_for_inference(messages):
-    if not tokenizer: return ""
-    current_date = datetime.now().strftime('%d %b %Y')
-    text = tokenizer.apply_chat_template(
+# =====================================================
+# Helper Functions
+# =====================================================
+def softmax(x: np.ndarray) -> np.ndarray:
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum()
+
+
+def preprocess(image_bytes: bytes) -> np.ndarray:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = img.resize((IMG_SIZE, IMG_SIZE))
+
+    arr = np.array(img).astype("float32") / 255.0
+    arr = (arr - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+    arr = np.transpose(arr, (2, 0, 1))
+
+    return arr[np.newaxis, :].astype(MODEL_DTYPE)
+
+
+def format_chat_prompt(messages: list) -> str:
+    if tokenizer is None:
+        return ""
+
+    return tokenizer.apply_chat_template(
         messages,
         add_generation_prompt=True,
         tokenize=False,
-        date_string=current_date
+        date_string=datetime.now().strftime("%d %b %Y")
     )
-    return text
+
 
 def generate_text_explanation(predicted_class: str) -> str:
-    if model is None or tokenizer is None:
-        logger.warning("N-ATLaS model not loaded - using fallback.")
+    if llm_model is None or tokenizer is None:
+        logger.warning("N-ATLaS unavailable — using fallback.")
         return ""
 
-    q_chat = [
-        {'role':'system','content':'You are an agricultural extension officer providing advice in English, Hausa, Igbo, and Yoruba.'},
-        {'role': 'user', 'content': f"Provide short, farmer-friendly advice for the condition: {predicted_class}. Format it exactly as: English: ... Hausa: ... Igbo: ... Yoruba: ..."}
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are an agricultural extension officer providing advice "
+                "in English, Hausa, Igbo, and Yoruba."
+            )
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Provide short, farmer-friendly advice for the condition: "
+                f"{predicted_class}. Format exactly as:\n"
+                "English:\nHausa:\nIgbo:\nYoruba:"
+            )
+        }
     ]
 
-    text = format_text_for_inference(q_chat)
-    input_tokens = tokenizer(text, return_tensors='pt', add_special_tokens=False)
-    
-    device = torch.device("cpu") 
-    input_tokens = {k: v.to(device) for k, v in input_tokens.items()}
-
-    outputs = model.generate(
-        **input_tokens,
-        max_new_tokens = 512, 
-        use_cache=True,
-        repetition_penalty=1.12,
-        temperature = 0.1
+    prompt = format_chat_prompt(messages)
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+        add_special_tokens=False
     )
 
-    decoded_outputs = tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
-    
-    # Simple extraction of the generated text part
-    generated_text = decoded_outputs.replace(text, "").strip()
+    inputs = {k: v.to("cpu") for k, v in inputs.items()}
 
-    return generated_text
+    outputs = llm_model.generate(
+        **inputs,
+        max_new_tokens=512,
+        temperature=0.1,
+        repetition_penalty=1.12,
+        use_cache=True
+    )
 
-# The extract_sections function remains the same as before
-def extract_sections(text):
+    decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    return decoded.replace(prompt, "").strip()
+
+
+def extract_sections(text: str) -> dict:
     sections = {"english": "", "hausa": "", "igbo": "", "yoruba": ""}
-    # ... (keep the rest of the extract_sections function as you had it) ...
     current = None
 
     for line in text.splitlines():
-        l = line.lower().strip()
-        if l.startswith("english"):
+        key = line.lower().strip()
+
+        if key.startswith("english"):
             current = "english"; continue
-        if l.startswith("hausa"):
+        if key.startswith("hausa"):
             current = "hausa"; continue
-        if l.startswith("igbo"):
+        if key.startswith("igbo"):
             current = "igbo"; continue
-        if l.startswith("yoruba"):
+        if key.startswith("yoruba"):
             current = "yoruba"; continue
+
         if current:
             sections[current] += line.strip() + " "
 
-    # fallback
     if not any(sections.values()):
         sections["english"] = (
             "This disease was detected with high confidence. "
             "Please consult a trained agricultural extension officer "
-            "for appropriate treatment and prevention guidance."
+            "for proper treatment and prevention."
         )
 
     return sections
 
-# -------------------------------------------------------
-# API Endpoints
-# -------------------------------------------------------
 
+# =====================================================
+# API Routes
+# =====================================================
 @app.get("/", response_class=HTMLResponse)
-def read_root():
-    """
-    Handles the root URL request expected by Hugging Face Spaces.
-    Provides a simple HTML landing page.
-    """
+def root():
     return """
     <html>
-        <head>
-            <title>AgriCare FastAPI Service</title>
-        </head>
+        <head><title>AgriCare API</title></head>
         <body>
-            <h1>Welcome to the AgriCare API Space!</h1>
-            <p>The main FastAPI service is running correctly.</p>
-            <p>Access the API documentation at the <a href="/docs">/docs</a> endpoint.</p>
-            <p>The prediction endpoint is <b>/predict</b> (POST request).</p>
+            <h1>AgriCare API is running</h1>
+            <p>Use <a href="/docs">/docs</a> for API documentation.</p>
+            <p>POST images to <b>/predict</b></p>
         </body>
     </html>
     """
@@ -188,26 +226,11 @@ def read_root():
 @app.post("/predict")
 async def predict(
     file: UploadFile = File(...),
-    language: str = Form("english") 
+    language: str = Form("english")
 ):
-    """
-    Inference endpoint.
-
-    Inputs:
-    - image file
-    - language: english | hausa | igbo | yoruba
-
-    Returns:
-    - prediction
-    - confidence
-    - explanation (language-specific)
-    - routing decision
-    """
-
     image_bytes = await file.read()
     arr = preprocess(image_bytes)
 
-    # ---- Model inference ----
     logits = np.squeeze(sess.run(None, {INPUT_NAME: arr})[0])
     probs = softmax(logits)
 
@@ -215,17 +238,12 @@ async def predict(
     confidence = float(probs[idx])
     predicted = CLASS_NAMES[idx]
 
-    # ---- Text explanation ----
-    text = generate_text_explanation(predicted)
-    sections = extract_sections(text)
+    raw_text = generate_text_explanation(predicted)
+    sections = extract_sections(raw_text)
 
-    # Fallback if model explanation fails
-    explanation = sections.get(language.lower(), "")
-    if not explanation.strip():
-        explanation = (
-            "This condition was detected with high confidence. "
-            "Please consult an agricultural extension officer for guidance."
-        )
+    explanation = sections.get(language.lower(), "").strip()
+    if not explanation:
+        explanation = sections["english"]
 
     return {
         "status": "low_confidence" if confidence < LOW_CONF_THRESHOLD else "ok",
@@ -237,9 +255,8 @@ async def predict(
         "probabilities": probs.tolist()
     }
 
-# -------------------------------------------------------
-# Run
-# -------------------------------------------------------
-# if __name__ == "__main__":
-#     # Note: Hugging Face uses port 7860. Local runs can use 8000 if desired.
-#     uvicorn.run("app_fastapi:app", host="0.0.0.0", port=8000, reload=True)
+
+# =====================================================
+# Local Run 
+# =====================================================
+# uvicorn.run("app_fastapi:app", host="0.0.0.0", port=8000, reload=True)
