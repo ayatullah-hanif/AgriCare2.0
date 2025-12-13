@@ -43,10 +43,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agricare_api")
 
 # -------------------------------------------------------
-# Model Setup
+# Model Setup (ONNX Model)
 # -------------------------------------------------------
 MODEL_PATH = "cassava_efficientnetb3_fp16.onnx"
-# Ensure the model is loaded correctly with the appropriate provider configuration
 sess = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
 
 INPUT_NAME = sess.get_inputs()[0].name
@@ -64,11 +63,11 @@ IMG_SIZE = 300
 LOW_CONF_THRESHOLD = 0.60
 
 # -------------------------------------------------------
-# Hugging Face – N-ATLaS
+# Hugging Face – N-ATLaS 
 # -------------------------------------------------------
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-HF_BASE = "https://router.huggingface.co/hf-inference/models"
+HF_BASE = "api-inference.huggingface.co"
 NATLAS_TEXT_URL = f"{HF_BASE}/NCAIR1/N-ATLaS"
 
 HEADERS = {
@@ -93,13 +92,12 @@ def preprocess(image_bytes):
     return arr[np.newaxis, :].astype(MODEL_DTYPE)
 
 # -------------------------------------------------------
-# N-ATLaS Text
+# N-ATLaS Text Generation
 # -------------------------------------------------------
-# In app_fastapi.py in the N-ATLaS Text section:
 def generate_text_explanation(predicted_class: str) -> str:
     # --- DEBUGGING LOG ---
     if not HF_TOKEN:
-        logger.error("DEBUG: HF_TOKEN is missing or empty in environment.")
+        logger.error("DEBUG: HF_TOKEN is missing or empty in environment. (Using fallback)")
         return ""
     else:
         logger.info("DEBUG: HF_TOKEN successfully loaded from environment.")
@@ -109,7 +107,13 @@ def generate_text_explanation(predicted_class: str) -> str:
     Provide agricultural advice for cassava condition:
     {predicted_class}
 
-    ... (prompt stays the same) ...
+    Structure the response as:
+    English:
+    Hausa:
+    Igbo:
+    Yoruba:
+
+    Keep each section short and farmer-friendly.
     """
 
     try:
@@ -131,14 +135,9 @@ def generate_text_explanation(predicted_class: str) -> str:
 
         data = r.json()
         
-        # Check if the response is a dictionary with the key 'generated_text'
-        if isinstance(data, dict) and "generated_text" in data:
-             return data["generated_text"]
+        if isinstance(data, list) and data and "generated_text" in data[0]:
+             return data[0]["generated_text"]
         
-        # Handle case where the response might be a list (less common for text generation)
-        if isinstance(data, list) and data and "generated_text" in data:
-            return data["generated_text"]
-
         logger.error(f"Unexpected N-ATLaS response format: {data}")
         return ""
 
@@ -168,7 +167,7 @@ def extract_sections(text):
         if current:
             sections[current] += line.strip() + " "
 
-    # fallback
+    # fallback 
     if not any(sections.values()):
         sections["english"] = (
             "This disease was detected with high confidence. "
@@ -206,7 +205,7 @@ def read_root():
 @app.post("/predict")
 async def predict(
     file: UploadFile = File(...),
-    language: str = Form("english")  # frontend-controlled
+    language: str = Form("english") 
 ):
     """
     Inference endpoint.
@@ -256,7 +255,7 @@ async def predict(
     }
 
 # -------------------------------------------------------
-# Run (Commented out for Docker deployment)
+# Run
 # -------------------------------------------------------
 # if __name__ == "__main__":
 #     # Note: Hugging Face uses port 7860. Local runs can use 8000 if desired.
