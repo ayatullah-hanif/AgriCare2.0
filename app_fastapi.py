@@ -95,22 +95,21 @@ def preprocess(image_bytes):
 # -------------------------------------------------------
 # N-ATLaS Text
 # -------------------------------------------------------
+# In app_fastapi.py in the N-ATLaS Text section:
 def generate_text_explanation(predicted_class: str) -> str:
+    # --- DEBUGGING LOG ---
     if not HF_TOKEN:
-        logger.warning("HF_TOKEN missing – skipping N-ATLaS.")
+        logger.error("DEBUG: HF_TOKEN is missing or empty in environment.")
         return ""
+    else:
+        logger.info("DEBUG: HF_TOKEN successfully loaded from environment.")
+    # --- END DEBUGGING LOG ---
 
     prompt = f"""
     Provide agricultural advice for cassava condition:
     {predicted_class}
 
-    Structure the response as:
-    English:
-    Hausa:
-    Igbo:
-    Yoruba:
-
-    Keep each section short and farmer-friendly.
+    ... (prompt stays the same) ...
     """
 
     try:
@@ -121,14 +120,24 @@ def generate_text_explanation(predicted_class: str) -> str:
             timeout=20
         )
 
+        # --- DEBUGGING LOG ---
+        logger.info(f"DEBUG: N-ATLaS API responded with status code: {r.status_code}")
+        logger.info(f"DEBUG: N-ATLaS API response body: {r.text}")
+        # --- END DEBUGGING LOG ---
+
         if r.status_code != 200:
             logger.error(f"N-ATLaS HTTP {r.status_code}: {r.text}")
             return ""
 
         data = r.json()
-
-        if isinstance(data, list) and data and "generated_text" in data[0]:
-            return data[0]["generated_text"]
+        
+        # Check if the response is a dictionary with the key 'generated_text'
+        if isinstance(data, dict) and "generated_text" in data:
+             return data["generated_text"]
+        
+        # Handle case where the response might be a list (less common for text generation)
+        if isinstance(data, list) and data and "generated_text" in data:
+            return data["generated_text"]
 
         logger.error(f"Unexpected N-ATLaS response format: {data}")
         return ""
