@@ -172,6 +172,7 @@ Text:
 
 from fastapi.responses import HTMLResponse
 
+@app.get("/", response_class=HTMLResponse)
 async def root():
     return """
     <!DOCTYPE html>
@@ -198,7 +199,6 @@ async def root():
     </html>
     """
 
-@app.post("/predict")
 async def predict(
     file: UploadFile = File(...),
     language: str = Form("english")
