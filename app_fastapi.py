@@ -7,11 +7,9 @@ Production-grade AI backend for cassava disease detection.
 Features:
 ✓ ONNX EfficientNet-B3 inference
 ✓ Proper softmax probabilities
-✓ English-first agricultural guidance
+✓ English-first medical guidance
 ✓ Multilingual translation via N-ATLaS
 ✓ Human-in-the-loop escalation
-
-Designed for real-world Nigerian agriculture.
 """
 
 import os
@@ -41,6 +39,14 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agricare_api")
 
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "AgriCare Disease Detection API",
+        "endpoint": "/predict"
+    }
+
 # -------------------------------------------------------
 # Model Setup
 # -------------------------------------------------------
@@ -62,66 +68,50 @@ IMG_SIZE = 300
 LOW_CONF_THRESHOLD = 0.60
 
 # -------------------------------------------------------
-# Disease Recommendations (ENGLISH SOURCE OF TRUTH)
+# Disease Recommendation Dictionary (ENGLISH SOURCE OF TRUTH)
 # -------------------------------------------------------
 DISEASE_RECOMMENDATIONS = {
-    "Cassava Bacterial Blight": {
-        "english": (
-            "Cassava Bacterial Blight was detected.\n"
-            "• Remove and destroy infected plants.\n"
-            "• Use clean, disease-free planting materials.\n"
-            "• Apply copper-based bactericides such as Copper Oxychloride.\n"
-            "• Avoid overhead irrigation to reduce disease spread."
-        )
-    },
+    "Cassava Bacterial Blight": (
+        "Cassava Bacterial Blight was detected. "
+        "Remove and destroy infected plants. "
+        "Use clean disease-free planting materials. "
+        "Apply copper-based bactericides such as Copper Oxychloride. "
+        "Avoid overhead irrigation to reduce spread."
+    ),
 
-    "Cassava Brown Streak Disease": {
-        "english": (
-            "Cassava Brown Streak Disease was detected.\n"
-            "• There is no chemical cure for this disease.\n"
-            "• Control whiteflies using insecticides like Imidacloprid or Thiamethoxam.\n"
-            "• Plant resistant cassava varieties.\n"
-            "• Remove and destroy infected plants early."
-        )
-    },
+    "Cassava Brown Streak Disease": (
+        "Cassava Brown Streak Disease was detected. "
+        "There is no chemical cure for this disease. "
+        "Control whiteflies using insecticides like Imidacloprid or Thiamethoxam. "
+        "Plant resistant cassava varieties and remove infected plants early."
+    ),
 
-    "Cassava Green Mottle": {
-        "english": (
-            "Cassava Green Mottle was detected.\n"
-            "• Control insect vectors such as aphids and whiteflies.\n"
-            "• Use insecticides like Lambda-cyhalothrin or Cypermethrin.\n"
-            "• Maintain field hygiene.\n"
-            "• Use certified disease-free planting materials."
-        )
-    },
+    "Cassava Green Mottle": (
+        "Cassava Green Mottle was detected. "
+        "Control aphids and whiteflies using Lambda-cyhalothrin or Cypermethrin. "
+        "Maintain field hygiene and use certified disease-free cuttings."
+    ),
 
-    "Cassava Mosaic Disease": {
-        "english": (
-            "Cassava Mosaic Disease was detected.\n"
-            "• No direct chemical cure exists.\n"
-            "• Control whiteflies using Imidacloprid or Acetamiprid.\n"
-            "• Uproot and destroy infected plants immediately.\n"
-            "• Plant resistant cassava varieties."
-        )
-    },
+    "Cassava Mosaic Disease": (
+        "Cassava Mosaic Disease was detected. "
+        "There is no direct chemical cure. "
+        "Control whiteflies using Imidacloprid or Acetamiprid. "
+        "Uproot and destroy infected plants immediately. "
+        "Plant resistant varieties recommended by extension officers."
+    ),
 
-    "Healthy Leaf": {
-        "english": (
-            "The cassava leaf is healthy.\n"
-            "• No treatment is required.\n"
-            "• Continue monitoring your farm.\n"
-            "• Maintain good agricultural practices."
-        )
-    }
+    "Healthy Leaf": (
+        "The cassava leaf is healthy. "
+        "No treatment is required. "
+        "Continue regular monitoring and good farm hygiene."
+    )
 }
 
 # -------------------------------------------------------
 # Hugging Face – N-ATLaS (TEXT TRANSLATION ONLY)
 # -------------------------------------------------------
 HF_TOKEN = os.getenv("HF_TOKEN")
-
-HF_BASE = "https://router.huggingface.co/hf-inference/models"
-NATLAS_TEXT_URL = f"{HF_BASE}/NCAIR1/N-ATLaS"
+NATLAS_URL = "https://router.huggingface.co/hf-inference/models/NCAIR1/N-ATLaS"
 
 HEADERS = {
     "Authorization": f"Bearer {HF_TOKEN}",
@@ -138,46 +128,43 @@ def softmax(x):
 def preprocess(image_bytes):
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img = img.resize((IMG_SIZE, IMG_SIZE))
-
     arr = np.array(img).astype("float32") / 255.0
     arr = (arr - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
     arr = np.transpose(arr, (2, 0, 1))
     return arr[np.newaxis, :].astype(MODEL_DTYPE)
 
-# -------------------------------------------------------
-# Translation via N-ATLaS
-# -------------------------------------------------------
 def translate_text(text: str, language: str) -> str:
     if language.lower() == "english":
         return text
 
     prompt = f"""
-    Translate the following agricultural advice into {language}.
-    Keep it simple and farmer-friendly.
+Translate the following agricultural advice into {language}.
+Keep it simple, clear, and farmer-friendly.
 
-    Text:
-    {text}
-    """
+Text:
+{text}
+"""
 
     try:
         r = requests.post(
-            NATLAS_TEXT_URL,
+            NATLAS_URL,
             headers=HEADERS,
             json={"inputs": prompt},
             timeout=20
         )
 
-        r.raise_for_status()
+        if r.status_code != 200:
+            logger.error(f"N-ATLaS error {r.status_code}: {r.text}")
+            return text
 
         data = r.json()
         if isinstance(data, list) and data:
             return data[0].get("generated_text", text)
 
-        return text
-
     except Exception as e:
         logger.error(f"N-ATLaS translation failed: {e}")
-        return text
+
+    return text
 
 # -------------------------------------------------------
 # API Endpoint
@@ -197,10 +184,7 @@ async def predict(
     confidence = float(probs[idx])
     predicted = CLASS_NAMES[idx]
 
-    # English source text
-    base_text = DISEASE_RECOMMENDATIONS[predicted]["english"]
-
-    # Translate if needed
+    base_text = DISEASE_RECOMMENDATIONS[predicted]
     final_text = translate_text(base_text, language)
 
     return {
@@ -210,12 +194,11 @@ async def predict(
         "route_to_expert": confidence < LOW_CONF_THRESHOLD,
         "language": language,
         "recommendation_text": final_text,
-        "audio_available": False,
         "probabilities": probs.tolist()
     }
 
 # -------------------------------------------------------
-# Run (HF-compatible)
+# Run
 # -------------------------------------------------------
 if __name__ == "__main__":
     uvicorn.run("app_fastapi:app", host="0.0.0.0", port=7860)
