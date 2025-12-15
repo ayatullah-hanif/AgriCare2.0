@@ -4,25 +4,26 @@ AgriCare – Disease Detection API
 
 Production-grade AI backend for cassava disease detection.
 
+Features:
 ✓ ONNX EfficientNet-B3 inference
-✓ Deterministic English advice (dict-based)
-✓ N-ATLaS translation + audio generation
+✓ Proper softmax probabilities
+✓ English-first agricultural guidance
+✓ Multilingual translation via N-ATLaS
 ✓ Human-in-the-loop escalation
-✓ Hugging Face Spaces ready
+
+Designed for real-world Nigerian agriculture.
 """
 
 import os
 import io
 import logging
-import base64
 import numpy as np
 import onnxruntime as ort
 import requests
-import uvicorn
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+import uvicorn
 
 # -------------------------------------------------------
 # App Setup
@@ -61,52 +62,70 @@ IMG_SIZE = 300
 LOW_CONF_THRESHOLD = 0.60
 
 # -------------------------------------------------------
-# English Advice Dictionary (SOURCE OF TRUTH)
+# Disease Recommendations (ENGLISH SOURCE OF TRUTH)
 # -------------------------------------------------------
-ENGLISH_ADVICE = {
-    "Cassava Bacterial Blight": (
-        "Cassava bacterial blight causes leaf wilting and stem rot. "
-        "Remove infected plants, avoid overhead watering, and use resistant varieties."
-    ),
-    "Cassava Brown Streak Disease": (
-        "Cassava brown streak disease damages roots and reduces yield. "
-        "Use certified disease-free cuttings and control whiteflies."
-    ),
-    "Cassava Green Mottle": (
-        "Cassava green mottle causes leaf discoloration. "
-        "Remove affected plants early and maintain good farm hygiene."
-    ),
-    "Cassava Mosaic Disease": (
-        "Cassava mosaic disease leads to distorted leaves and stunted growth. "
-        "Plant resistant varieties and control whitefly populations."
-    ),
-    "Healthy Leaf": (
-        "Your cassava plant appears healthy. "
-        "Continue good farming practices and monitor regularly."
-    )
+DISEASE_RECOMMENDATIONS = {
+    "Cassava Bacterial Blight": {
+        "english": (
+            "Cassava Bacterial Blight was detected.\n"
+            "• Remove and destroy infected plants.\n"
+            "• Use clean, disease-free planting materials.\n"
+            "• Apply copper-based bactericides such as Copper Oxychloride.\n"
+            "• Avoid overhead irrigation to reduce disease spread."
+        )
+    },
+
+    "Cassava Brown Streak Disease": {
+        "english": (
+            "Cassava Brown Streak Disease was detected.\n"
+            "• There is no chemical cure for this disease.\n"
+            "• Control whiteflies using insecticides like Imidacloprid or Thiamethoxam.\n"
+            "• Plant resistant cassava varieties.\n"
+            "• Remove and destroy infected plants early."
+        )
+    },
+
+    "Cassava Green Mottle": {
+        "english": (
+            "Cassava Green Mottle was detected.\n"
+            "• Control insect vectors such as aphids and whiteflies.\n"
+            "• Use insecticides like Lambda-cyhalothrin or Cypermethrin.\n"
+            "• Maintain field hygiene.\n"
+            "• Use certified disease-free planting materials."
+        )
+    },
+
+    "Cassava Mosaic Disease": {
+        "english": (
+            "Cassava Mosaic Disease was detected.\n"
+            "• No direct chemical cure exists.\n"
+            "• Control whiteflies using Imidacloprid or Acetamiprid.\n"
+            "• Uproot and destroy infected plants immediately.\n"
+            "• Plant resistant cassava varieties."
+        )
+    },
+
+    "Healthy Leaf": {
+        "english": (
+            "The cassava leaf is healthy.\n"
+            "• No treatment is required.\n"
+            "• Continue monitoring your farm.\n"
+            "• Maintain good agricultural practices."
+        )
+    }
 }
 
 # -------------------------------------------------------
-# Hugging Face – N-ATLaS
+# Hugging Face – N-ATLaS (TEXT TRANSLATION ONLY)
 # -------------------------------------------------------
 HF_TOKEN = os.getenv("HF_TOKEN")
-if not HF_TOKEN:
-    raise RuntimeError("HF_TOKEN is required and must be set in Hugging Face Secrets.")
 
 HF_BASE = "https://router.huggingface.co/hf-inference/models"
 NATLAS_TEXT_URL = f"{HF_BASE}/NCAIR1/N-ATLaS"
-NATLAS_TTS_URL  = f"{HF_BASE}/NCAIR1/N-ATLaS-TTS"
 
 HEADERS = {
     "Authorization": f"Bearer {HF_TOKEN}",
     "Content-Type": "application/json"
-}
-
-LANG_CODE_MAP = {
-    "english": "en",
-    "hausa": "ha",
-    "igbo": "ig",
-    "yoruba": "yo"
 }
 
 # -------------------------------------------------------
@@ -126,59 +145,42 @@ def preprocess(image_bytes):
     return arr[np.newaxis, :].astype(MODEL_DTYPE)
 
 # -------------------------------------------------------
-# N-ATLaS Translation
+# Translation via N-ATLaS
 # -------------------------------------------------------
-def translate_text(text: str, target_language: str) -> str:
-    if target_language == "english":
+def translate_text(text: str, language: str) -> str:
+    if language.lower() == "english":
         return text
 
     prompt = f"""
-    Translate the following agricultural advice into {target_language}.
-    Keep it clear and farmer-friendly.
+    Translate the following agricultural advice into {language}.
+    Keep it simple and farmer-friendly.
 
     Text:
     {text}
     """
 
-    r = requests.post(
-        NATLAS_TEXT_URL,
-        headers=HEADERS,
-        json={"inputs": prompt},
-        timeout=25
-    )
+    try:
+        r = requests.post(
+            NATLAS_TEXT_URL,
+            headers=HEADERS,
+            json={"inputs": prompt},
+            timeout=20
+        )
 
-    r.raise_for_status()
-    data = r.json()
-    return data[0]["generated_text"]
+        r.raise_for_status()
 
-# -------------------------------------------------------
-# N-ATLaS Audio
-# -------------------------------------------------------
-def generate_audio(text: str, language: str):
-    lang_code = LANG_CODE_MAP.get(language, "en")
+        data = r.json()
+        if isinstance(data, list) and data:
+            return data[0].get("generated_text", text)
 
-    r = requests.post(
-        NATLAS_TTS_URL,
-        headers=HEADERS,
-        json={
-            "inputs": text,
-            "parameters": {"language": lang_code}
-        },
-        timeout=25
-    )
+        return text
 
-    r.raise_for_status()
-    return r.json().get("audio")  # base64 WAV
+    except Exception as e:
+        logger.error(f"N-ATLaS translation failed: {e}")
+        return text
 
 # -------------------------------------------------------
-# Root (HF requirement)
-# -------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-def root():
-    return "<h2>AgriCare API is running</h2><p>Visit <a href='/docs'>/docs</a></p>"
-
-# -------------------------------------------------------
-# Prediction Endpoint
+# API Endpoint
 # -------------------------------------------------------
 @app.post("/predict")
 async def predict(
@@ -193,30 +195,27 @@ async def predict(
 
     idx = int(np.argmax(probs))
     confidence = float(probs[idx])
-    disease = CLASS_NAMES[idx]
+    predicted = CLASS_NAMES[idx]
 
     # English source text
-    english_text = ENGLISH_ADVICE[disease]
+    base_text = DISEASE_RECOMMENDATIONS[predicted]["english"]
 
-    # Translation
-    final_text = translate_text(english_text, language.lower())
-
-    # Audio
-    audio = generate_audio(final_text, language.lower())
+    # Translate if needed
+    final_text = translate_text(base_text, language)
 
     return {
         "status": "low_confidence" if confidence < LOW_CONF_THRESHOLD else "ok",
-        "predicted_class": disease,
+        "predicted_class": predicted,
         "confidence": round(confidence, 4),
         "route_to_expert": confidence < LOW_CONF_THRESHOLD,
         "language": language,
-        "text": final_text,
-        "audio_base64": audio,
+        "recommendation_text": final_text,
+        "audio_available": False,
         "probabilities": probs.tolist()
     }
 
 # -------------------------------------------------------
-# Run (Local)
+# Run (HF-compatible)
 # -------------------------------------------------------
 if __name__ == "__main__":
-    uvicorn.run("app_fastapi:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app_fastapi:app", host="0.0.0.0", port=7860)
