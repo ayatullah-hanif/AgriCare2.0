@@ -169,6 +169,36 @@ Text:
 # -------------------------------------------------------
 # API Endpoint
 # -------------------------------------------------------
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <meta http-equiv="refresh" content="0; url=/docs" />
+            <title>AgriCare API</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    text-align: center;
+                    margin-top: 20%;
+                }
+            </style>
+        </head>
+        <body>
+            <h2>AgriCare Disease Detection API</h2>
+            <p>Redirecting to API documentation…</p>
+            <p>
+                If not redirected,
+                <a href="/docs">click here to open Swagger Docs</a>.
+            </p>
+        </body>
+    </html>
+    """
+
 @app.post("/predict")
 async def predict(
     file: UploadFile = File(...),
