@@ -21,6 +21,7 @@ import requests
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 import uvicorn
 
 # -------------------------------------------------------
@@ -39,13 +40,25 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agricare_api")
 
-@app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "service": "AgriCare Disease Detection API",
-        "endpoint": "/predict"
-    }
+# -------------------------------------------------------
+# ROOT → REDIRECT TO DOCS
+# -------------------------------------------------------
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta http-equiv="refresh" content="0; url=/docs" />
+        <title>AgriCare API</title>
+      </head>
+      <body style="font-family: Arial; text-align:center; margin-top:20%">
+        <h2>AgriCare Disease Detection API</h2>
+        <p>Redirecting to API documentation…</p>
+        <p><a href="/docs">Open Swagger Docs</a></p>
+      </body>
+    </html>
+    """
 
 # -------------------------------------------------------
 # Model Setup
@@ -68,47 +81,34 @@ IMG_SIZE = 300
 LOW_CONF_THRESHOLD = 0.60
 
 # -------------------------------------------------------
-# Disease Recommendation Dictionary (ENGLISH SOURCE OF TRUTH)
+# Disease Recommendations (ENGLISH SOURCE)
 # -------------------------------------------------------
 DISEASE_RECOMMENDATIONS = {
-    "Cassava Bacterial Blight": (
-        "Cassava Bacterial Blight was detected. "
-        "Remove and destroy infected plants. "
-        "Use clean disease-free planting materials. "
-        "Apply copper-based bactericides such as Copper Oxychloride. "
-        "Avoid overhead irrigation to reduce spread."
-    ),
+    "Cassava Bacterial Blight":
+        "Cassava Bacterial Blight was detected. Remove and destroy infected plants. "
+        "Use clean disease-free planting materials. Apply copper-based bactericides "
+        "such as Copper Oxychloride. Avoid overhead irrigation.",
 
-    "Cassava Brown Streak Disease": (
-        "Cassava Brown Streak Disease was detected. "
-        "There is no chemical cure for this disease. "
-        "Control whiteflies using insecticides like Imidacloprid or Thiamethoxam. "
-        "Plant resistant cassava varieties and remove infected plants early."
-    ),
+    "Cassava Brown Streak Disease":
+        "Cassava Brown Streak Disease was detected. There is no chemical cure. "
+        "Control whiteflies using Imidacloprid or Thiamethoxam. "
+        "Plant resistant varieties and remove infected plants early.",
 
-    "Cassava Green Mottle": (
-        "Cassava Green Mottle was detected. "
-        "Control aphids and whiteflies using Lambda-cyhalothrin or Cypermethrin. "
-        "Maintain field hygiene and use certified disease-free cuttings."
-    ),
+    "Cassava Green Mottle":
+        "Cassava Green Mottle was detected. Control aphids and whiteflies using "
+        "Lambda-cyhalothrin or Cypermethrin. Maintain field hygiene.",
 
-    "Cassava Mosaic Disease": (
-        "Cassava Mosaic Disease was detected. "
-        "There is no direct chemical cure. "
+    "Cassava Mosaic Disease":
+        "Cassava Mosaic Disease was detected. No direct chemical cure exists. "
         "Control whiteflies using Imidacloprid or Acetamiprid. "
-        "Uproot and destroy infected plants immediately. "
-        "Plant resistant varieties recommended by extension officers."
-    ),
+        "Uproot infected plants immediately.",
 
-    "Healthy Leaf": (
-        "The cassava leaf is healthy. "
-        "No treatment is required. "
-        "Continue regular monitoring and good farm hygiene."
-    )
+    "Healthy Leaf":
+        "The cassava leaf is healthy. No treatment is required. Continue monitoring."
 }
 
 # -------------------------------------------------------
-# Hugging Face – N-ATLaS (TEXT TRANSLATION ONLY)
+# Hugging Face N-ATLaS (Translation)
 # -------------------------------------------------------
 HF_TOKEN = os.getenv("HF_TOKEN")
 NATLAS_URL = "https://router.huggingface.co/hf-inference/models/NCAIR1/N-ATLaS"
@@ -133,17 +133,11 @@ def preprocess(image_bytes):
     arr = np.transpose(arr, (2, 0, 1))
     return arr[np.newaxis, :].astype(MODEL_DTYPE)
 
-def translate_text(text: str, language: str) -> str:
+def translate_text(text: str, language: str):
     if language.lower() == "english":
         return text
 
-    prompt = f"""
-Translate the following agricultural advice into {language}.
-Keep it simple, clear, and farmer-friendly.
-
-Text:
-{text}
-"""
+    prompt = f"Translate this agricultural advice into {language}:\n{text}"
 
     try:
         r = requests.post(
@@ -152,53 +146,18 @@ Text:
             json={"inputs": prompt},
             timeout=20
         )
-
-        if r.status_code != 200:
-            logger.error(f"N-ATLaS error {r.status_code}: {r.text}")
-            return text
-
-        data = r.json()
-        if isinstance(data, list) and data:
+        if r.status_code == 200:
+            data = r.json()
             return data[0].get("generated_text", text)
-
     except Exception as e:
-        logger.error(f"N-ATLaS translation failed: {e}")
+        logger.error(e)
 
     return text
 
 # -------------------------------------------------------
-# API Endpoint
+# PREDICT ENDPOINT ✅
 # -------------------------------------------------------
-
-from fastapi.responses import HTMLResponse
-
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    return """
-    <!DOCTYPE html>
-    <html>
-        <head>
-            <meta http-equiv="refresh" content="0; url=/docs" />
-            <title>AgriCare API</title>
-            <style>
-                body {
-                    font-family: Arial, sans-serif;
-                    text-align: center;
-                    margin-top: 20%;
-                }
-            </style>
-        </head>
-        <body>
-            <h2>AgriCare Disease Detection API</h2>
-            <p>Redirecting to API documentation…</p>
-            <p>
-                If not redirected,
-                <a href="/docs">click here to open Swagger Docs</a>.
-            </p>
-        </body>
-    </html>
-    """
-
+@app.post("/predict")
 async def predict(
     file: UploadFile = File(...),
     language: str = Form("english")
@@ -220,14 +179,13 @@ async def predict(
         "status": "low_confidence" if confidence < LOW_CONF_THRESHOLD else "ok",
         "predicted_class": predicted,
         "confidence": round(confidence, 4),
-        "route_to_expert": confidence < LOW_CONF_THRESHOLD,
         "language": language,
         "recommendation_text": final_text,
         "probabilities": probs.tolist()
     }
 
 # -------------------------------------------------------
-# Run
+# Run (HF Compatible)
 # -------------------------------------------------------
 if __name__ == "__main__":
     uvicorn.run("app_fastapi:app", host="0.0.0.0", port=7860)
