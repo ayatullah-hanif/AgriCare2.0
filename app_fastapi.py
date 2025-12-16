@@ -1,17 +1,3 @@
-"""
-AgriCare – Disease Detection API
---------------------------------
-
-Production-grade AI backend for cassava disease detection.
-
-Features:
-✓ ONNX EfficientNet-B3 inference
-✓ Proper softmax probabilities
-✓ English-first medical guidance
-✓ Multilingual translation via N-ATLaS
-✓ Human-in-the-loop escalation
-"""
-
 import os
 import io
 import logging
@@ -41,24 +27,25 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agricare_api")
 
 # -------------------------------------------------------
-# ROOT → REDIRECT TO DOCS
+# Root → Docs
 # -------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def root():
     return """
-    <!DOCTYPE html>
     <html>
       <head>
-        <meta http-equiv="refresh" content="0; url=/docs" />
+        <meta http-equiv="refresh" content="0; url=/docs">
         <title>AgriCare API</title>
       </head>
-      <body style="font-family: Arial; text-align:center; margin-top:20%">
-        <h2>AgriCare Disease Detection API</h2>
-        <p>Redirecting to API documentation…</p>
-        <p><a href="/docs">Open Swagger Docs</a></p>
+      <body>
+        <p>Redirecting to <a href="/docs">/docs</a>...</p>
       </body>
     </html>
     """
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 # -------------------------------------------------------
 # Model Setup
@@ -81,7 +68,7 @@ IMG_SIZE = 300
 LOW_CONF_THRESHOLD = 0.60
 
 # -------------------------------------------------------
-# Disease Recommendations (ENGLISH SOURCE)
+# English Source of Truth
 # -------------------------------------------------------
 DISEASE_RECOMMENDATIONS = {
     "Cassava Bacterial Blight":
@@ -99,16 +86,17 @@ DISEASE_RECOMMENDATIONS = {
         "Lambda-cyhalothrin or Cypermethrin. Maintain field hygiene.",
 
     "Cassava Mosaic Disease":
-        "Cassava Mosaic Disease was detected. No direct chemical cure exists. "
+        "Cassava Mosaic Disease was detected. There is no direct chemical cure. "
         "Control whiteflies using Imidacloprid or Acetamiprid. "
-        "Uproot infected plants immediately.",
+        "Uproot and destroy infected plants immediately.",
 
     "Healthy Leaf":
-        "The cassava leaf is healthy. No treatment is required. Continue monitoring."
+        "The cassava leaf is healthy. No treatment is required. "
+        "Continue regular monitoring and good farm hygiene."
 }
 
 # -------------------------------------------------------
-# Hugging Face N-ATLaS (Translation)
+# Hugging Face – N-ATLaS
 # -------------------------------------------------------
 HF_TOKEN = os.getenv("HF_TOKEN")
 NATLAS_URL = "https://router.huggingface.co/hf-inference/models/NCAIR1/N-ATLaS"
@@ -116,6 +104,12 @@ NATLAS_URL = "https://router.huggingface.co/hf-inference/models/NCAIR1/N-ATLaS"
 HEADERS = {
     "Authorization": f"Bearer {HF_TOKEN}",
     "Content-Type": "application/json"
+}
+
+LANGUAGE_MAP = {
+    "yoruba": "Yoruba language",
+    "hausa": "Hausa language",
+    "igbo": "Igbo language"
 }
 
 # -------------------------------------------------------
@@ -133,29 +127,33 @@ def preprocess(image_bytes):
     arr = np.transpose(arr, (2, 0, 1))
     return arr[np.newaxis, :].astype(MODEL_DTYPE)
 
-def translate_text(text: str, language: str):
+def translate_text(text: str, language: str) -> str:
     if language.lower() == "english":
         return text
 
-    prompt = f"Translate this agricultural advice into {language}:\n{text}"
+    target_lang = LANGUAGE_MAP.get(language.lower(), language)
 
-    try:
-        r = requests.post(
-            NATLAS_URL,
-            headers=HEADERS,
-            json={"inputs": prompt},
-            timeout=20
-        )
-        if r.status_code == 200:
-            data = r.json()
-            return data[0].get("generated_text", text)
-    except Exception as e:
-        logger.error(e)
+    prompt = (
+        f"Translate the following agricultural advice into {target_lang}. "
+        f"Do NOT answer in English.\n\n{text}"
+    )
 
-    return text
+    r = requests.post(
+        NATLAS_URL,
+        headers=HEADERS,
+        json={"inputs": prompt},
+        timeout=30
+    )
+
+    r.raise_for_status()
+    data = r.json()
+
+    translated = data[0].get("generated_text", text)
+
+    return translated.strip()
 
 # -------------------------------------------------------
-# PREDICT ENDPOINT ✅
+# Prediction Endpoint
 # -------------------------------------------------------
 @app.post("/predict")
 async def predict(
@@ -181,6 +179,7 @@ async def predict(
         "confidence": round(confidence, 4),
         "language": language,
         "recommendation_text": final_text,
+        "route_to_expert": confidence < LOW_CONF_THRESHOLD,
         "probabilities": probs.tolist()
     }
 
